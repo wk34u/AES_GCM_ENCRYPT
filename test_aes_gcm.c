@@ -1,6 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>  // For remove()
+
 #define BUFFER_SIZE 4096
 
 int run_cmd(const char *cmd) {
@@ -12,7 +14,11 @@ int run_cmd(const char *cmd) {
 int compare_files(const char *f1, const char *f2) {
     FILE *a = fopen(f1, "rb");
     FILE *b = fopen(f2, "rb");
-    if (!a || !b) return 0;
+    if (!a || !b) {
+        if (a) fclose(a);
+        if (b) fclose(b);
+        return 0;
+    }
 
     int result = 1;
     while (1) {
@@ -31,8 +37,19 @@ int compare_files(const char *f1, const char *f2) {
 
 void write_file(const char *filename, const void *data, size_t len) {
     FILE *f = fopen(filename, "wb");
+    if (!f) {
+        printf("Failed to write file: %s\n", filename);
+        exit(1);
+    }
     fwrite(data, 1, len, f);
     fclose(f);
+}
+
+void cleanup_files() {
+    remove("in.txt");
+    remove("out.enc");
+    remove("out.txt");
+    remove("key.bin");
 }
 
 int test_case(const char *label, const void *input_data, size_t input_len, const void *key_data, size_t key_len) {
@@ -40,12 +57,17 @@ int test_case(const char *label, const void *input_data, size_t input_len, const
     write_file("in.txt", input_data, input_len);
     write_file("key.bin", key_data, key_len);
 
-    if (run_cmd("aes_gcm_encrypt.exe enc in.txt out.enc key.bin")) return 1;
-    if (run_cmd("aes_gcm_encrypt.exe dec out.enc out.txt key.bin")) return 1;
+    int ret = 0;
+    if (run_cmd("aes_gcm_encrypt.exe enc in.txt out.enc key.bin")) ret = 1;
+    else if (run_cmd("aes_gcm_encrypt.exe dec out.enc out.txt key.bin")) ret = 1;
+    else {
+        int match = compare_files("in.txt", "out.txt");
+        printf("%s\n\n", match ? "PASS" : "FAIL");
+        if (!match) ret = 1;
+    }
 
-    int match = compare_files("in.txt", "out.txt");
-    printf("%s\n\n", match ? "PASS" : "FAIL");
-    return match ? 0 : 1;
+    cleanup_files();
+    return ret;
 }
 
 int main() {
@@ -54,16 +76,14 @@ int main() {
     const unsigned char short_key[] = "shortshortshort!"; // 16 bytes
     const unsigned char good_key[] = "0123456789ABCDEF0123456789ABCDEFkey"; // >= 32 bytes
     const unsigned char long_key[4096] = { [0 ... 4095] = 'K' };
-    unsigned char buffer[1024 * 1024]; // buffer for large/random input
+    unsigned char buffer[1024 * 1024];
 
-    // Original tests
     failed += test_case("Empty input, short key", "", 0, short_key, sizeof(short_key));
     failed += test_case("1-byte input, short key", "A", 1, short_key, sizeof(short_key));
     failed += test_case("Short input, long key", "Test data!", 10, long_key, sizeof(long_key));
     failed += test_case("Large input, long key", long_key, 1024, long_key, sizeof(long_key));
     failed += test_case("Multiblock input (4100 bytes)", long_key, 4100, good_key, sizeof(good_key));
 
-    // New tests
     failed += test_case("Exact block (16 bytes)", "0123456789ABCDEF", 16, good_key, sizeof(good_key));
 
     const char block48[48] = { [0 ... 47] = 'A' };
